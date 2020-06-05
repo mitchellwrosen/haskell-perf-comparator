@@ -1,0 +1,3 @@
+cradle:
+  cabal:
+    component: "haskell-perf-comparator:exe:haskell-perf-comparator"
