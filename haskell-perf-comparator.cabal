@@ -3,7 +3,13 @@ name: haskell-perf-comparator
 version: 0
 
 executable haskell-perf-comparator
-  build-depends: base, bytestring, optparse-applicative, process, semigroups
+  build-depends:
+    base,
+    bytestring,
+    optparse-applicative,
+    prettyprinter,
+    process,
+    semigroups,
   default-language: Haskell2010
   ghc-options: -Wall -threaded
   main-is: Main.hs

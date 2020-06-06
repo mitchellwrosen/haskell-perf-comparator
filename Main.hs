@@ -1,16 +1,14 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Main where
 
-import Control.Applicative (optional)
+import Control.Applicative (some)
 import Control.Exception
 import Control.Monad
 import Data.ByteString (ByteString)
@@ -40,7 +38,7 @@ main =
 
 parser :: Opt.Parser (IO ())
 parser =
-  run <$> runs <*> prog <*> optional prog
+  run <$> runs <*> some prog
   where
     runs =
       Opt.option
@@ -48,15 +46,10 @@ parser =
         (Opt.help "Number of runs" <> Opt.metavar "INT" <> Opt.short 'n' <> Opt.showDefault <> Opt.value 1)
     prog = Opt.strArgument (Opt.metavar "PROGRAM")
 
-run :: Int -> String -> Maybe String -> IO ()
-run runs command1 = \case
-  Nothing -> do
-    summaries <- replicateM runs (run1 (words command1))
-    putStrLn (renderTable (summaryToTable (fold summaries)))
-  Just command2 -> do
-    summaries1 <- replicateM runs (run1 (words command1))
-    summaries2 <- replicateM runs (run1 (words command2))
-    putStrLn (renderTable (summariesToTable (fold summaries1) (fold summaries2)))
+run :: Int -> [String] -> IO ()
+run runs commands = do
+  summaries <- traverse (replicateM runs . run1 . words) commands
+  putStrLn (renderTable (summariesToTable (map fold summaries)))
 
 run1 :: [String] -> IO Summary
 run1 ~(command : arguments) =
@@ -182,39 +175,11 @@ toSummary = \case
     readRational =
       realToFrac . read @Double
 
-summaryToTable :: Summary -> [Row]
-summaryToTable s@Summary {..} =
-  Header : header : Line : table ++ [Footer]
+summariesToTable :: [Summary] -> [Row]
+summariesToTable ~(summary : summaries) =
+  Header : table ++ [Footer]
   where
-    header = Row ["Metric", "Value"]
-    table =
-      [ bytes "Memory (avg)" (average_live_data s),
-        bytes "Memory (max)" (coerce max_live_bytes),
-        bytesPerSecond "Memory (alloc)" (alloc_per_second s),
-        seconds "Time (total)" (getAvg total_wall_seconds),
-        seconds "Time (program)" (getAvg mut_wall_seconds),
-        seconds "Time (gc)" (getAvg gc_wall_seconds),
-        seconds "Time (total cpu)" (getAvg total_cpu_seconds),
-        seconds "Time (program cpu)" (getAvg mut_cpu_seconds),
-        seconds "Time (gc cpu)" (getAvg gc_cpu_seconds),
-        percentage "Program (time)" (divide (getAvg mut_wall_seconds) (getAvg total_wall_seconds)),
-        percentage "Program (cpu time)" (divide (getAvg mut_cpu_seconds) (getAvg total_cpu_seconds)),
-        number "GC (total)" (getAvg num_gcs),
-        bytesPerSecond "GC (copy)" (copy_per_second s),
-        percentage "GC (time)" (divide (getAvg gc_wall_seconds) (getAvg total_wall_seconds)),
-        percentage "GC (cpu time)" (divide (getAvg gc_cpu_seconds) (getAvg total_cpu_seconds))
-      ]
-    bytes name v = Row [name, white (prettyBytes v)]
-    bytesPerSecond name v = Row [name, white (prettyBytesPerSecond v)]
-    number name v = Row [name, white (show (round v :: Int))]
-    percentage name v = Row [name, white (prettyPercentage v)]
-    seconds name v = Row [name, white (prettySeconds v)]
-
-summariesToTable :: Summary -> Summary -> [Row]
-summariesToTable s1 s2 =
-  Header : header : Line : table ++ [Footer]
-  where
-    header = Row ["Metric", "Before", "After", "Change"]
+    table :: [Row]
     table =
       [ bytes "Memory (avg)" average_live_data (>),
         bytes "Memory (max)" (coerce max_live_bytes) (>),
@@ -235,7 +200,7 @@ summariesToTable s1 s2 =
           "Program (cpu time)"
           (\s -> divide (getAvg (mut_cpu_seconds s)) (getAvg (total_cpu_seconds s)))
           (<),
-        number "GC (total)" (getAvg . num_gcs),
+        number "GC (total)" (getAvg . num_gcs) (>),
         bytesPerSecond "GC (copy)" copy_per_second (>),
         percentage
           "GC (time)"
@@ -246,18 +211,27 @@ summariesToTable s1 s2 =
           (\s -> divide (getAvg (gc_cpu_seconds s)) (getAvg (total_cpu_seconds s)))
           (>)
       ]
+    metric :: (Rational -> String) -> Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
+    metric render name f g =
+      Row (name : white (render (f summary)) : cols summary summaries)
+      where
+        cols :: Summary -> [Summary] -> [Cell]
+        cols s0 = \case
+          [] -> []
+          s1 : ss ->
+            let v0 = f s0
+                v1 = f s1
+             in delta (g v0 v1) v0 v1 : white (render v1) : cols s1 ss
     bytes :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
-    bytes name f g =
-      Row [name, white (prettyBytes v1), white (prettyBytes v2), delta (g v1 v2) v1 v2]
-      where
-        v1 = f s1
-        v2 = f s2
+    bytes = metric prettyBytes
     bytesPerSecond :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
-    bytesPerSecond name f g =
-      Row [name, white (prettyBytesPerSecond v1), white (prettyBytesPerSecond v2), delta (g v1 v2) v1 v2]
-      where
-        v1 = f s1
-        v2 = f s2
+    bytesPerSecond = metric prettyBytesPerSecond
+    number :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
+    number = metric (show . round @_ @Int)
+    percentage :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
+    percentage = metric prettyPercentage
+    seconds :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
+    seconds = metric prettySeconds
     delta :: Bool -> Rational -> Rational -> Cell
     delta b v1 v2 =
       (if b then green else red)
@@ -265,24 +239,6 @@ summariesToTable s1 s2 =
             "%+.1f%%"
             (realToFrac (divide ((v2 - v1) * 100) v1) :: Double)
         )
-    number :: Cell -> (Summary -> Rational) -> Row
-    number name f =
-      Row [name, white (show (round v1 :: Int)), white (show (round v2 :: Int)), delta (v1 > v2) v1 v2]
-      where
-        v1 = f s1
-        v2 = f s2
-    percentage :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
-    percentage name f g =
-      Row [name, white (prettyPercentage v1), white (prettyPercentage v2), delta (g v1 v2) v1 v2]
-      where
-        v1 = f s1
-        v2 = f s2
-    seconds :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
-    seconds name f g =
-      Row [name, white (prettySeconds v1), white (prettySeconds v2), delta (g v1 v2) v1 v2]
-      where
-        v1 = f s1
-        v2 = f s2
 
 alloc_per_second :: Summary -> Rational
 alloc_per_second s =
