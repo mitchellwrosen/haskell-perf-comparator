@@ -177,8 +177,10 @@ toSummary = \case
 
 summariesToTable :: [Summary] -> [Row]
 summariesToTable ~(summary : summaries) =
-  Header : table ++ [Footer]
+  Header header : table ++ [Footer]
   where
+    header :: [String]
+    header = ("" : "1" : concat (take (length summaries) (map (\i -> ["δ", show i]) [(2::Int)..])) ++ ["Total"])
     table :: [Row]
     table =
       [ bytes "Memory (avg)" average_live_data (>),
@@ -217,7 +219,13 @@ summariesToTable ~(summary : summaries) =
       where
         cols :: Summary -> [Summary] -> [Cell]
         cols s0 = \case
-          [] -> []
+          [] ->
+            case summaries of
+              [] -> []
+              _ ->
+                let v0 = f summary
+                    v1 = f (last summaries)
+                 in [delta (g v0 v1) v0 v1]
           s1 : ss ->
             let v0 = f s0
                 v1 = f s1
@@ -297,7 +305,7 @@ prettySeconds n0
 data Row
   = Row [Cell]
   | Line
-  | Header
+  | Header [String]
   | Footer
 
 data Cell
@@ -327,10 +335,13 @@ renderTable rows =
   where
     renderRow :: Row -> String
     renderRow = \case
-      Row row -> "┃ " ++ intercalate " ┃ " (map renderCell (zip widths row)) ++ " ┃"
-      Line -> "┠" ++ intercalate "╂" (map (\n -> replicate (n + 2) '─') widths) ++ "┨"
-      Header -> "┏" ++ intercalate "┳" (map (\n -> replicate (n + 2) '━') widths) ++ "┓"
-      Footer -> "┗" ++ intercalate "┻" (map (\n -> replicate (n + 2) '━') widths) ++ "┛"
+      Row row -> "│ " ++ intercalate " │ " (map renderCell (zip widths row)) ++ " │"
+      Line -> "├" ++ intercalate "┼" (map (\n -> replicate (n + 2) '─') widths) ++ "┤"
+      Header labels ->
+        "┌" ++ intercalate "┬"
+          (map (\(s, n) -> s ++ replicate (n + 2 - length s) '─') (zip labels widths))
+          ++ "┐"
+      Footer -> "└" ++ intercalate "┴" (map (\n -> replicate (n + 2) '─') widths) ++ "┘"
     renderCell :: (Int, Cell) -> String
     renderCell (n, Cell color s) =
       case color of
@@ -345,7 +356,7 @@ renderTable rows =
         ( \acc -> \case
             Row cs -> map (\(Cell _ s, n) -> max n (length s)) (zip cs acc)
             Line -> acc
-            Header -> acc
+            Header labels -> map (\(label, n) -> max n (length label - 2)) (zip labels acc)
             Footer -> acc
         )
         (take cols (repeat 0))
