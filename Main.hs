@@ -138,6 +138,8 @@ toSummary = \case
   ("exit_cpu_seconds", n) -> mempty {exit_cpu_seconds = readAvg n}
   ("exit_wall_seconds", n) -> mempty {exit_wall_seconds = readAvg n}
   ("fragmentation_bytes", n) -> mempty {fragmentation_bytes = readAvg n}
+  ("hc_cpu_seconds", n) -> mempty {hc_cpu_seconds = Just (readAvg n)}
+  ("hc_wall_seconds", n) -> mempty {hc_wall_seconds = Just (readAvg n)}
   ("init_cpu_seconds", n) -> mempty {init_cpu_seconds = readAvg n}
   ("init_wall_seconds", n) -> mempty {init_wall_seconds = readAvg n}
   ("major_gcs", n) -> mempty {major_gcs = readAvg n}
@@ -150,6 +152,8 @@ toSummary = \case
   ("mut_wall_seconds", n) -> mempty {mut_wall_seconds = readAvg n}
   ("num_GCs", n) -> mempty {num_gcs = readAvg n}
   ("par_copied_bytes", n) -> mempty {par_copied_bytes = readAvg n}
+  ("rp_cpu_seconds", n) -> mempty {rp_cpu_seconds = Just (readAvg n)}
+  ("rp_wall_seconds", n) -> mempty {rp_wall_seconds = Just (readAvg n)}
   ("total_cpu_seconds", n) -> mempty {total_cpu_seconds = readAvg n}
   ("total_wall_seconds", n) -> mempty {total_wall_seconds = readAvg n}
   ("alloc_rate", _) -> mempty
@@ -180,38 +184,31 @@ summariesToTable ~(summary : summaries) =
   Header header : table ++ [Footer]
   where
     header :: [String]
-    header = ("" : "1" : concat (take (length summaries) (map (\i -> ["δ", show i]) [(2::Int)..])) ++ ["Total"])
+    header =
+      (if length summaries > 1 then (++ ["Total"]) else id)
+        ("" : "1" : concat (take (length summaries) (map (\i -> ["δ", show i]) [(2 :: Int) ..])))
     table :: [Row]
     table =
-      [ bytes "Memory (avg)" average_live_data (>),
-        bytes "Memory (max)" (coerce max_live_bytes) (>),
-        bytesPerSecond "Memory (alloc)" alloc_per_second (>),
-        seconds "Time (total)" (getAvg . total_wall_seconds) (>),
-        seconds "Time (program)" (getAvg . mut_wall_seconds) (>),
-        seconds "Time (gc)" (getAvg . gc_wall_seconds) (>),
+      [ seconds "Time" (getAvg . total_wall_seconds) (>),
+        seconds "Mutator time" (getAvg . mut_wall_seconds) (>),
+        percentage "Mutator time %" (\s -> divide (getAvg (mut_wall_seconds s)) (getAvg (total_wall_seconds s))) (<),
+        seconds "GC time" (getAvg . gc_wall_seconds) (>),
+        percentage "GC time %" (\s -> divide (getAvg (gc_wall_seconds s)) (getAvg (total_wall_seconds s))) (>),
         -- seconds "Time (rts)" (\s -> getAvg (init_wall_seconds s) + getAvg (exit_wall_seconds s)) (>),
-        seconds "Time (total cpu)" (getAvg . total_cpu_seconds) (>),
-        seconds "Time (program cpu)" (getAvg . mut_cpu_seconds) (>),
-        seconds "Time (gc cpu)" (getAvg . gc_cpu_seconds) (>),
+        seconds "CPU time" (getAvg . total_cpu_seconds) (>),
+        seconds "Mutator CPU time" (getAvg . mut_cpu_seconds) (>),
+        percentage "Mutator CPU time %" (\s -> divide (getAvg (mut_cpu_seconds s)) (getAvg (total_cpu_seconds s))) (<),
+        seconds "GC CPU time" (getAvg . gc_cpu_seconds) (>),
+        percentage "GC CPU time %" (\s -> divide (getAvg (gc_cpu_seconds s)) (getAvg (total_cpu_seconds s))) (>),
         -- seconds "Time (rts cpu)" (\s -> getAvg (init_cpu_seconds s) + getAvg (exit_cpu_seconds s)) (>),
-        percentage
-          "Program (time)"
-          (\s -> divide (getAvg (mut_wall_seconds s)) (getAvg (total_wall_seconds s)))
-          (<),
-        percentage
-          "Program (cpu time)"
-          (\s -> divide (getAvg (mut_cpu_seconds s)) (getAvg (total_cpu_seconds s)))
-          (<),
-        number "GC (total)" (getAvg . num_gcs) (>),
-        bytesPerSecond "GC (copy)" copy_per_second (>),
-        percentage
-          "GC (time)"
-          (\s -> divide (getAvg (gc_wall_seconds s)) (getAvg (total_wall_seconds s)))
-          (>),
-        percentage
-          "GC (cpu time)"
-          (\s -> divide (getAvg (gc_cpu_seconds s)) (getAvg (total_cpu_seconds s)))
-          (>)
+        Line,
+        bytes "Average live memory" average_live_data (>),
+        bytes "Max live memory" (coerce max_live_bytes) (>),
+        bytes "Memory allocated" (getAvg . allocated_bytes) (>),
+        bytes "Memory copied during GC" (getAvg . copied_bytes) (>),
+        bytes "Max memory reserved" (coerce max_mem_in_use_bytes) (>),
+        Line,
+        number "GCs" (getAvg . num_gcs) (>)
       ]
     metric :: (Rational -> String) -> Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
     metric render name f g =
@@ -232,8 +229,6 @@ summariesToTable ~(summary : summaries) =
              in delta (g v0 v1) v0 v1 : white (render v1) : cols s1 ss
     bytes :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
     bytes = metric prettyBytes
-    bytesPerSecond :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
-    bytesPerSecond = metric prettyBytesPerSecond
     number :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
     number = metric (show . round @_ @Int)
     percentage :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
@@ -274,10 +269,6 @@ prettyBytes n0
   | n1 <- n0 / 1_000_000, n1 >= 1 = prettyNumber n1 ++ " mb"
   | n1 <- n0 / 1_000, n1 >= 1 = prettyNumber n1 ++ " kb"
   | otherwise = show (round n0 :: Int) ++ " b"
-
-prettyBytesPerSecond :: Rational -> String
-prettyBytesPerSecond =
-  (++ "/s") . prettyBytes
 
 prettyPercentage :: Rational -> String
 prettyPercentage =
@@ -338,8 +329,10 @@ renderTable rows =
       Row row -> "│ " ++ intercalate " │ " (map renderCell (zip widths row)) ++ " │"
       Line -> "├" ++ intercalate "┼" (map (\n -> replicate (n + 2) '─') widths) ++ "┤"
       Header labels ->
-        "┌" ++ intercalate "┬"
-          (map (\(s, n) -> s ++ replicate (n + 2 - length s) '─') (zip labels widths))
+        "┌"
+          ++ intercalate
+            "┬"
+            (map (\(s, n) -> s ++ replicate (n + 2 - length s) '─') (zip labels widths))
           ++ "┐"
       Footer -> "└" ++ intercalate "┴" (map (\n -> replicate (n + 2) '─') widths) ++ "┘"
     renderCell :: (Int, Cell) -> String
@@ -349,7 +342,7 @@ renderTable rows =
         Green -> "\ESC[32m" ++ s' ++ "\ESC[39m"
         Red -> "\ESC[31m" ++ s' ++ "\ESC[39m"
       where
-        s' = s ++ replicate (n - length s) ' '
+        s' = replicate (n - length s) ' ' ++ s
     widths :: [Int]
     widths =
       foldl'
