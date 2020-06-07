@@ -236,10 +236,11 @@ summariesToTable ~(summary : summaries) =
         [ bytes "Average memory residency" average_live_data (>),
           bytes "Max memory residency" (coerce max_live_bytes) (>),
           bytes "Memory allocated" (getAvg . allocated_bytes) (>),
+          bytesPerSecond "Memory allocated per second" allocated_bytes_per_second (>),
           bytes "Memory copied during GC" (getAvg . copied_bytes) (>),
           bytes "Memory allocated from OS" (coerce max_mem_in_use_bytes) (>),
           bytes "Memory wasted by GHC" (coerce max_slop_bytes) (>),
-          bytes "Memory lost (fragmentation)" (getAvg . fragmentation_bytes) (>)
+          bytes "Fragmented memory" (getAvg . fragmentation_bytes) (>)
         ],
         [number "Garbage collections" (getAvg . num_gcs) (>)],
         [ maybeNumber "Sparks converted" (fmap getAvg . sparks_converted) (<),
@@ -273,15 +274,11 @@ summariesToTable ~(summary : summaries) =
             case (f s0, f s1) of
               (Just v0, Just v1) -> delta (g v0 v1) v0 v1 : white (render v1) : makeCols s1 ss
               _ -> "" : "" : makeCols s1 ss
-    bytes :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
     bytes = metric prettyBytes
-    number :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
+    bytesPerSecond = metric prettyBytesPerSecond
     number = metric (show . round @_ @Int)
-    maybeNumber :: Cell -> (Summary -> Maybe Rational) -> (Rational -> Rational -> Bool) -> Row
     maybeNumber = maybeMetric (show . round @_ @Int)
-    percentage :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
     percentage = metric prettyPercentage
-    seconds :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
     seconds = metric prettySeconds
     delta :: Bool -> Rational -> Rational -> Cell
     delta b v1 v2 =
@@ -296,17 +293,13 @@ summariesToTable ~(summary : summaries) =
         pct =
           ((v2 - v1) * 100) `divide` v1
 
-alloc_per_second :: Summary -> Rational
-alloc_per_second s =
+allocated_bytes_per_second :: Summary -> Rational
+allocated_bytes_per_second s =
   getAvg (allocated_bytes s) `divide` getAvg (total_wall_seconds s)
 
 average_live_data :: Summary -> Rational
 average_live_data s =
   getAvg (cumulative_live_bytes s) `divide` getAvg (major_gcs s)
-
-copy_per_second :: Summary -> Rational
-copy_per_second s =
-  getAvg (copied_bytes s) `divide` getAvg (total_wall_seconds s)
 
 gc_cpu_percent :: Summary -> Rational
 gc_cpu_percent s =
@@ -338,6 +331,10 @@ prettyBytes n0
   | n1 <- n0 / 1_000_000, n1 >= 1 = prettyNumber n1 ++ " mb"
   | n1 <- n0 / 1_000, n1 >= 1 = prettyNumber n1 ++ " kb"
   | otherwise = show (round n0 :: Int) ++ " b"
+
+prettyBytesPerSecond :: Rational -> String
+prettyBytesPerSecond =
+  (++ "/s") . prettyBytes
 
 prettyPercentage :: Rational -> String
 prettyPercentage =
