@@ -16,8 +16,8 @@ import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteString.Char8
 import Data.Coerce (coerce)
 import Data.Foldable
-import Data.Function (fix)
 import Data.List
+import Data.Maybe
 import qualified Data.Semigroup as Semigroup
 import Data.Semigroup.Generic
 import Data.String (IsString (..))
@@ -209,81 +209,120 @@ toSummary = \case
     readRational =
       realToFrac . read @Double
 
-summariesToTable :: [Summary] -> [Row]
+summariesToTable :: [Summary] -> Table
 summariesToTable ~(summary : summaries) =
-  Header header : table ++ [Footer]
+  Table header rowGroup
   where
     header :: [String]
     header =
       (if length summaries > 1 then (++ ["Total"]) else id)
-        ("" : "1" : concat (take (length summaries) (map (\i -> ["δ", show i]) [(2 :: Int) ..])))
-    table :: [Row]
-    table =
-      [ seconds "Time" (getAvg . total_wall_seconds) (>),
-        seconds "Mutator time" (getAvg . mut_wall_seconds) (>),
-        percentage "Mutator time %" (\s -> divide (getAvg (mut_wall_seconds s)) (getAvg (total_wall_seconds s))) (<),
-        seconds "GC time" (getAvg . gc_wall_seconds) (>),
-        percentage "GC time %" (\s -> divide (getAvg (gc_wall_seconds s)) (getAvg (total_wall_seconds s))) (>),
+        ("" : "1" : concat (take (length summaries) (map (\i -> ["", show i]) [(2 :: Int) ..])))
+    rowGroup :: [RowGroup]
+    rowGroup =
+      [ [ seconds "Time" (getAvg . total_wall_seconds) (>),
+          seconds "Mutator time" (getAvg . mut_wall_seconds) (>),
+          percentage "Mutator time %" mut_wall_percent (<),
+          seconds "GC time" (getAvg . gc_wall_seconds) (>),
+          percentage "GC time %" gc_wall_percent (>)
+        ],
         -- seconds "Time (rts)" (\s -> getAvg (init_wall_seconds s) + getAvg (exit_wall_seconds s)) (>),
-        seconds "CPU time" (getAvg . total_cpu_seconds) (>),
-        seconds "Mutator CPU time" (getAvg . mut_cpu_seconds) (>),
-        percentage "Mutator CPU time %" (\s -> divide (getAvg (mut_cpu_seconds s)) (getAvg (total_cpu_seconds s))) (<),
-        seconds "GC CPU time" (getAvg . gc_cpu_seconds) (>),
-        percentage "GC CPU time %" (\s -> divide (getAvg (gc_cpu_seconds s)) (getAvg (total_cpu_seconds s))) (>),
+        [ seconds "CPU time" (getAvg . total_cpu_seconds) (>),
+          seconds "Mutator CPU time" (getAvg . mut_cpu_seconds) (>),
+          percentage "Mutator CPU time %" mut_cpu_percent (<),
+          seconds "GC CPU time" (getAvg . gc_cpu_seconds) (>),
+          percentage "GC CPU time %" gc_cpu_percent (>)
+        ],
         -- seconds "Time (rts cpu)" (\s -> getAvg (init_cpu_seconds s) + getAvg (exit_cpu_seconds s)) (>),
-        Line,
-        bytes "Average live memory" average_live_data (>),
-        bytes "Max live memory" (coerce max_live_bytes) (>),
-        bytes "Memory allocated" (getAvg . allocated_bytes) (>),
-        bytes "Memory copied during GC" (getAvg . copied_bytes) (>),
-        bytes "Max memory reserved" (coerce max_mem_in_use_bytes) (>),
-        Line,
-        number "GCs" (getAvg . num_gcs) (>)
+        [ bytes "Average memory residency" average_live_data (>),
+          bytes "Max memory residency" (coerce max_live_bytes) (>),
+          bytes "Memory allocated" (getAvg . allocated_bytes) (>),
+          bytes "Memory copied during GC" (getAvg . copied_bytes) (>),
+          bytes "Memory allocated from OS" (coerce max_mem_in_use_bytes) (>),
+          bytes "Memory wasted by GHC" (coerce max_slop_bytes) (>),
+          bytes "Memory lost (fragmentation)" (getAvg . fragmentation_bytes) (>)
+        ],
+        [number "Garbage collections" (getAvg . num_gcs) (>)],
+        [ maybeNumber "Sparks converted" (fmap getAvg . sparks_converted) (<),
+          maybeNumber "Sparks overflowed" (fmap getAvg . sparks_overflowed) (>),
+          maybeNumber "Sparks not sparked" (fmap getAvg . sparks_dud) (>),
+          maybeNumber "Sparks fizzled" (fmap getAvg . sparks_fizzled) (>),
+          maybeNumber "Sparks GC'd" (fmap getAvg . sparks_fizzled) (>)
+        ]
       ]
     metric :: (Rational -> String) -> Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
-    metric render name f g =
-      Row (name : white (render (f summary)) : cols summary summaries)
+    metric render name f = maybeMetric render name (Just . f)
+    maybeMetric :: (Rational -> String) -> Cell -> (Summary -> Maybe Rational) -> (Rational -> Rational -> Bool) -> Row
+    maybeMetric render name f g =
+      if all isEmptyCell cols
+        then Empty
+        else Row (name : cols)
       where
-        cols :: Summary -> [Summary] -> [Cell]
-        cols s0 = \case
+        cols :: [Cell]
+        cols =
+          white (maybe "" render (f summary)) : makeCols summary summaries
+        makeCols :: Summary -> [Summary] -> [Cell]
+        makeCols s0 = \case
           [] ->
             case summaries of
               [] -> []
               _ ->
-                let v0 = f summary
-                    v1 = f (last summaries)
-                 in [delta (g v0 v1) v0 v1]
+                case (f summary, f (last summaries)) of
+                  (Just v0, Just v1) -> [delta (g v0 v1) v0 v1]
+                  _ -> []
           s1 : ss ->
-            let v0 = f s0
-                v1 = f s1
-             in delta (g v0 v1) v0 v1 : white (render v1) : cols s1 ss
+            case (f s0, f s1) of
+              (Just v0, Just v1) -> delta (g v0 v1) v0 v1 : white (render v1) : makeCols s1 ss
+              _ -> "" : "" : makeCols s1 ss
     bytes :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
     bytes = metric prettyBytes
     number :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
     number = metric (show . round @_ @Int)
+    maybeNumber :: Cell -> (Summary -> Maybe Rational) -> (Rational -> Rational -> Bool) -> Row
+    maybeNumber = maybeMetric (show . round @_ @Int)
     percentage :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
     percentage = metric prettyPercentage
     seconds :: Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
     seconds = metric prettySeconds
     delta :: Bool -> Rational -> Rational -> Cell
     delta b v1 v2 =
-      (if b then green else red)
-        ( printf
-            "%+.1f%%"
-            (realToFrac (divide ((v2 - v1) * 100) v1) :: Double)
-        )
+      if abs pct <= cutoff
+        then ""
+        else (if b then green else red) (printf "%+.1f%%" (realToFrac pct :: Double))
+      where
+        cutoff :: Rational
+        cutoff =
+          0
+        pct :: Rational
+        pct =
+          ((v2 - v1) * 100) `divide` v1
 
 alloc_per_second :: Summary -> Rational
 alloc_per_second s =
-  divide (getAvg (allocated_bytes s)) (getAvg (total_wall_seconds s))
+  getAvg (allocated_bytes s) `divide` getAvg (total_wall_seconds s)
 
 average_live_data :: Summary -> Rational
 average_live_data s =
-  divide (getAvg (cumulative_live_bytes s)) (getAvg (major_gcs s))
+  getAvg (cumulative_live_bytes s) `divide` getAvg (major_gcs s)
 
 copy_per_second :: Summary -> Rational
 copy_per_second s =
-  divide (getAvg (copied_bytes s)) (getAvg (total_wall_seconds s))
+  getAvg (copied_bytes s) `divide` getAvg (total_wall_seconds s)
+
+gc_cpu_percent :: Summary -> Rational
+gc_cpu_percent s =
+  getAvg (gc_cpu_seconds s) `divide` getAvg (total_cpu_seconds s)
+
+gc_wall_percent :: Summary -> Rational
+gc_wall_percent s =
+  getAvg (gc_wall_seconds s) `divide` getAvg (total_wall_seconds s)
+
+mut_cpu_percent :: Summary -> Rational
+mut_cpu_percent s =
+  getAvg (mut_cpu_seconds s) `divide` getAvg (total_cpu_seconds s)
+
+mut_wall_percent :: Summary -> Rational
+mut_wall_percent s =
+  getAvg (mut_wall_seconds s) `divide` getAvg (total_wall_seconds s)
 
 divide :: Rational -> Rational -> Rational
 divide n d =
@@ -323,11 +362,15 @@ prettySeconds n0
 -- Table rendering
 --------------------------------------------------------------------------------
 
+data Table
+  = Table [String] [RowGroup]
+
+type RowGroup =
+  [Row]
+
 data Row
   = Row [Cell]
-  | Line
-  | Header [String]
-  | Footer
+  | Empty
 
 data Cell
   = Cell Color String
@@ -350,21 +393,33 @@ green = Cell Green
 red :: String -> Cell
 red = Cell Red
 
-renderTable :: [Row] -> String
-renderTable rows =
-  unlines (map renderRow rows)
+isEmptyCell :: Cell -> Bool
+isEmptyCell (Cell _ s) =
+  null s
+
+renderTable :: Table -> String
+renderTable (Table labels rowGroups) =
+  intercalate "\n" (header : intersperse line (mapMaybe renderRowGroup rowGroups) ++ [footer])
   where
-    renderRow :: Row -> String
+    header :: String
+    header =
+      let middle = intercalate "┬" (map (\(s, n) -> s ++ replicate (n + 2 - length s) '─') (zip labels widths))
+       in "┌" ++ middle ++ "┐"
+    line :: String
+    line =
+      "├" ++ intercalate "┼" (map (\n -> replicate (n + 2) '─') widths) ++ "┤"
+    footer :: String
+    footer =
+      "└" ++ intercalate "┴" (map (\n -> replicate (n + 2) '─') widths) ++ "┘"
+    renderRowGroup :: RowGroup -> Maybe String
+    renderRowGroup rows =
+      case mapMaybe renderRow rows of
+        [] -> Nothing
+        s -> Just (intercalate "\n" s)
+    renderRow :: Row -> Maybe String
     renderRow = \case
-      Row row -> "│ " ++ intercalate " │ " (map renderCell (zip widths row)) ++ " │"
-      Line -> "├" ++ intercalate "┼" (map (\n -> replicate (n + 2) '─') widths) ++ "┤"
-      Header labels ->
-        "┌"
-          ++ intercalate
-            "┬"
-            (map (\(s, n) -> s ++ replicate (n + 2 - length s) '─') (zip labels widths))
-          ++ "┐"
-      Footer -> "└" ++ intercalate "┴" (map (\n -> replicate (n + 2) '─') widths) ++ "┘"
+      Row row -> Just ("│ " ++ intercalate " │ " (map renderCell (zip widths row)) ++ " │")
+      Empty -> Nothing
     renderCell :: (Int, Cell) -> String
     renderCell (n, Cell color s) =
       case color of
@@ -378,18 +433,10 @@ renderTable rows =
       foldl'
         ( \acc -> \case
             Row cs -> map (\(Cell _ s, n) -> max n (length s)) (zip cs acc)
-            Line -> acc
-            Header labels -> map (\(label, n) -> max n (length label - 2)) (zip labels acc)
-            Footer -> acc
+            Empty -> acc
         )
-        (take cols (repeat 0))
-        rows
-    cols :: Int
-    cols =
-      flip fix rows \loop -> \case
-        [] -> error "no colums in table"
-        Row cs : _ -> length cs
-        _ : rs -> loop rs
+        (map (subtract 1 . length) labels)
+        (concat rowGroups)
 
 --------------------------------------------------------------------------------
 -- Random monoids
