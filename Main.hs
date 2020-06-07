@@ -150,14 +150,42 @@ toSummary = \case
   ("max_slop_bytes", n) -> mempty {max_slop_bytes = readMax n}
   ("mut_cpu_seconds", n) -> mempty {mut_cpu_seconds = readAvg n}
   ("mut_wall_seconds", n) -> mempty {mut_wall_seconds = readAvg n}
+  ("n_capabilities", n) -> mempty {n_capabilities = Just (Semigroup.First (readRational n))}
   ("num_GCs", n) -> mempty {num_gcs = readAvg n}
   ("par_copied_bytes", n) -> mempty {par_copied_bytes = readAvg n}
+  ("peak_worker_count", n) -> mempty {peak_worker_count = Just (readAvg n)}
   ("rp_cpu_seconds", n) -> mempty {rp_cpu_seconds = Just (readAvg n)}
   ("rp_wall_seconds", n) -> mempty {rp_wall_seconds = Just (readAvg n)}
+  ("sparks_converted", n) -> mempty {sparks_converted = Just (readAvg n)}
+  ("sparks_dud ", n) -> mempty {sparks_dud = Just (readAvg n)}
+  ("sparks_fizzled", n) -> mempty {sparks_fizzled = Just (readAvg n)}
+  ("sparks_gcd", n) -> mempty {sparks_gcd = Just (readAvg n)}
+  ("sparks_overflowed", n) -> mempty {sparks_overflowed = Just (readAvg n)}
+  ("task_count", n) -> mempty {task_count = Just (readAvg n)}
   ("total_cpu_seconds", n) -> mempty {total_cpu_seconds = readAvg n}
   ("total_wall_seconds", n) -> mempty {total_wall_seconds = readAvg n}
+  ("worker_count", n) -> mempty {worker_count = Just (readAvg n)}
+  --
+  ("any_work", _) -> mempty
+  ("gc_alloc_block_sync_spin", _) -> mempty
+  ("gc_alloc_block_sync_yield", _) -> mempty
+  ("gc_spin_spin", _) -> mempty
+  ("gc_spin_yield", _) -> mempty
+  ("mut_spin_spin", _) -> mempty
+  ("mut_spin_yield", _) -> mempty
+  ("no_work", _) -> mempty
+  ("scav_find_work", _) -> mempty
+  ("waitForGcThreads_spin", _) -> mempty
+  ("waitForGcThreads_yield", _) -> mempty
+  ("whitehole_executeMessage_spin", _) -> mempty
+  ("whitehole_gc_spin", _) -> mempty
+  ("whitehole_lockClosure_spin", _) -> mempty
+  ("whitehole_lockClosure_yield", _) -> mempty
+  ("whitehole_threadPaused_spin", _) -> mempty
+  --
   ("alloc_rate", _) -> mempty
   ("average_bytes_used", _) -> mempty
+  ("bound_task_count", _) -> mempty
   ("bytes allocated", _) -> mempty
   ("gc_cpu_percent", _) -> mempty
   ("gc_wall_percent", _) -> mempty
@@ -166,6 +194,8 @@ toSummary = \case
   ("peak_megabytes_allocated", _) -> mempty
   ("productivity_cpu_percent", _) -> mempty
   ("productivity_wall_percent", _) -> mempty
+  ("sparks_count", _) -> mempty
+  ("work_balance", _) -> mempty
   (s, _) | "gen_" `isPrefixOf` s -> mempty
   (s, _) -> error ("Unknown metric: " ++ show s)
   where
