@@ -85,6 +85,22 @@ data Summary = Summary
     fragmentation_bytes :: Avg,
     gc_cpu_seconds :: Avg,
     gc_wall_seconds :: Avg,
+    -- The number of generations is tweakable, but I don't feel like handling that right now
+    gen_0_collections :: Avg,
+    gen_0_cpu_seconds :: Avg,
+    gen_0_max_pause_seconds :: Max,
+    gen_0_par_collections :: Avg,
+    gen_0_sync_spin :: Avg,
+    gen_0_sync_yield :: Avg,
+    gen_0_wall_seconds :: Avg,
+    gen_1_collections :: Avg,
+    gen_1_cpu_seconds :: Avg,
+    gen_1_max_pause_seconds :: Max,
+    gen_1_par_collections :: Avg,
+    gen_1_sync_spin :: Avg,
+    gen_1_sync_yield :: Avg,
+    gen_1_wall_seconds :: Avg,
+    --
     hc_cpu_seconds :: Maybe Avg,
     hc_wall_seconds :: Maybe Avg,
     init_cpu_seconds :: Avg,
@@ -98,7 +114,6 @@ data Summary = Summary
     mut_cpu_seconds :: Avg,
     mut_wall_seconds :: Avg,
     n_capabilities :: Maybe (Semigroup.First Rational),
-    num_gcs :: Avg,
     par_copied_bytes :: Avg,
     peak_worker_count :: Maybe Avg,
     rp_cpu_seconds :: Maybe Avg,
@@ -138,6 +153,20 @@ toSummary = \case
   ("exit_cpu_seconds", n) -> mempty {exit_cpu_seconds = readAvg n}
   ("exit_wall_seconds", n) -> mempty {exit_wall_seconds = readAvg n}
   ("fragmentation_bytes", n) -> mempty {fragmentation_bytes = readAvg n}
+  ("gen_0_collections", n) -> mempty {gen_0_collections = readAvg n}
+  ("gen_0_cpu_seconds", n) -> mempty {gen_0_cpu_seconds = readAvg n}
+  ("gen_0_max_pause_seconds", n) -> mempty {gen_0_max_pause_seconds = readMax n}
+  ("gen_0_par_collections", n) -> mempty {gen_0_par_collections = readAvg n}
+  ("gen_0_sync_spin", n) -> mempty {gen_0_sync_spin = readAvg n}
+  ("gen_0_sync_yield", n) -> mempty {gen_0_sync_yield = readAvg n}
+  ("gen_0_wall_seconds", n) -> mempty {gen_0_wall_seconds = readAvg n}
+  ("gen_1_collections", n) -> mempty {gen_1_collections = readAvg n}
+  ("gen_1_cpu_seconds", n) -> mempty {gen_1_cpu_seconds = readAvg n}
+  ("gen_1_max_pause_seconds", n) -> mempty {gen_1_max_pause_seconds = readMax n}
+  ("gen_1_par_collections", n) -> mempty {gen_1_par_collections = readAvg n}
+  ("gen_1_sync_spin", n) -> mempty {gen_1_sync_spin = readAvg n}
+  ("gen_1_sync_yield", n) -> mempty {gen_1_sync_yield = readAvg n}
+  ("gen_1_wall_seconds", n) -> mempty {gen_1_wall_seconds = readAvg n}
   ("hc_cpu_seconds", n) -> mempty {hc_cpu_seconds = Just (readAvg n)}
   ("hc_wall_seconds", n) -> mempty {hc_wall_seconds = Just (readAvg n)}
   ("init_cpu_seconds", n) -> mempty {init_cpu_seconds = readAvg n}
@@ -151,7 +180,6 @@ toSummary = \case
   ("mut_cpu_seconds", n) -> mempty {mut_cpu_seconds = readAvg n}
   ("mut_wall_seconds", n) -> mempty {mut_wall_seconds = readAvg n}
   ("n_capabilities", n) -> mempty {n_capabilities = Just (Semigroup.First (readRational n))}
-  ("num_GCs", n) -> mempty {num_gcs = readAvg n}
   ("par_copied_bytes", n) -> mempty {par_copied_bytes = readAvg n}
   ("peak_worker_count", n) -> mempty {peak_worker_count = Just (readAvg n)}
   ("rp_cpu_seconds", n) -> mempty {rp_cpu_seconds = Just (readAvg n)}
@@ -165,7 +193,7 @@ toSummary = \case
   ("total_cpu_seconds", n) -> mempty {total_cpu_seconds = readAvg n}
   ("total_wall_seconds", n) -> mempty {total_wall_seconds = readAvg n}
   ("worker_count", n) -> mempty {worker_count = Just (readAvg n)}
-  --
+  -- Look into these, maybe
   ("any_work", _) -> mempty
   ("gc_alloc_block_sync_spin", _) -> mempty
   ("gc_alloc_block_sync_yield", _) -> mempty
@@ -182,21 +210,23 @@ toSummary = \case
   ("whitehole_lockClosure_spin", _) -> mempty
   ("whitehole_lockClosure_yield", _) -> mempty
   ("whitehole_threadPaused_spin", _) -> mempty
-  --
+  -- Don't need these
   ("alloc_rate", _) -> mempty
   ("average_bytes_used", _) -> mempty
   ("bound_task_count", _) -> mempty
   ("bytes allocated", _) -> mempty
   ("gc_cpu_percent", _) -> mempty
   ("gc_wall_percent", _) -> mempty
+  ("gen_0_avg_pause_seconds", _) -> mempty
+  ("gen_1_avg_pause_seconds", _) -> mempty
   ("max_bytes_used", _) -> mempty
   ("num_byte_usage_samples", _) -> mempty
+  ("num_GCs", _) -> mempty
   ("peak_megabytes_allocated", _) -> mempty
   ("productivity_cpu_percent", _) -> mempty
   ("productivity_wall_percent", _) -> mempty
   ("sparks_count", _) -> mempty
   ("work_balance", _) -> mempty
-  (s, _) | "gen_" `isPrefixOf` s -> mempty
   (s, _) -> error ("Unknown metric: " ++ show s)
   where
     readAvg :: String -> Avg
@@ -219,36 +249,61 @@ summariesToTable ~(summary : summaries) =
         ("" : "1" : concat (take (length summaries) (map (\i -> ["", show i]) [(2 :: Int) ..])))
     rowGroup :: [RowGroup]
     rowGroup =
-      [ [ seconds "Time" (getAvg . total_wall_seconds) (>),
-          seconds "Mutator time" (getAvg . mut_wall_seconds) (>),
-          percentage "Mutator time %" mut_wall_percent (<),
-          seconds "GC time" (getAvg . gc_wall_seconds) (>),
-          percentage "GC time %" gc_wall_percent (>)
-        ],
+      [ RowGroup
+          "Elapsed time"
+          [ seconds "Total" (getAvg . total_wall_seconds) (>),
+            seconds "Mutator" (getAvg . mut_wall_seconds) (>),
+            percentage "Mutator %" mut_wall_percent (<),
+            seconds "Garbage collector" (getAvg . gc_wall_seconds) (>),
+            percentage "Garbage collector %" gc_wall_percent (>)
+          ],
         -- seconds "Time (rts)" (\s -> getAvg (init_wall_seconds s) + getAvg (exit_wall_seconds s)) (>),
-        [ seconds "CPU time" (getAvg . total_cpu_seconds) (>),
-          seconds "Mutator CPU time" (getAvg . mut_cpu_seconds) (>),
-          percentage "Mutator CPU time %" mut_cpu_percent (<),
-          seconds "GC CPU time" (getAvg . gc_cpu_seconds) (>),
-          percentage "GC CPU time %" gc_cpu_percent (>)
-        ],
+        RowGroup
+          "CPU time"
+          [ seconds "Total" (getAvg . total_cpu_seconds) (>),
+            seconds "Mutator" (getAvg . mut_cpu_seconds) (>),
+            percentage "Mutator %" mut_cpu_percent (<),
+            seconds "Garbage collector" (getAvg . gc_cpu_seconds) (>),
+            percentage "Garbage collector %" gc_cpu_percent (>)
+          ],
         -- seconds "Time (rts cpu)" (\s -> getAvg (init_cpu_seconds s) + getAvg (exit_cpu_seconds s)) (>),
-        [ bytes "Average memory residency" average_live_data (>),
-          bytes "Max memory residency" (coerce max_live_bytes) (>),
-          bytes "Memory allocated" (getAvg . allocated_bytes) (>),
-          bytesPerSecond "Memory allocated per second" allocated_bytes_per_second (>),
-          bytes "Memory copied during GC" (getAvg . copied_bytes) (>),
-          bytes "Memory allocated from OS" (coerce max_mem_in_use_bytes) (>),
-          bytes "Memory wasted by GHC" (coerce max_slop_bytes) (>),
-          bytes "Fragmented memory" (getAvg . fragmentation_bytes) (>)
-        ],
-        [number "Garbage collections" (getAvg . num_gcs) (>)],
-        [ maybeNumber "Sparks converted" (fmap getAvg . sparks_converted) (<),
-          maybeNumber "Sparks overflowed" (fmap getAvg . sparks_overflowed) (>),
-          maybeNumber "Sparks not sparked" (fmap getAvg . sparks_dud) (>),
-          maybeNumber "Sparks fizzled" (fmap getAvg . sparks_fizzled) (>),
-          maybeNumber "Sparks GC'd" (fmap getAvg . sparks_fizzled) (>)
-        ]
+        RowGroup
+          "Memory"
+          [ bytes "Average residency" average_live_data (>),
+            bytes "Max residency" (coerce max_live_bytes) (>),
+            bytes "Allocated" (getAvg . allocated_bytes) (>),
+            bytesPerSecond "Allocated per second" allocated_bytes_per_second (>),
+            bytes "Copied during GC" (getAvg . copied_bytes) (>),
+            bytes "Allocated from OS" (coerce max_mem_in_use_bytes) (>),
+            bytes "Wasted by GHC" (coerce max_slop_bytes) (>),
+            bytes "Fragmented" (getAvg . fragmentation_bytes) (>)
+          ],
+        RowGroup
+          "GC generation 0"
+          [ number "Collections" (getAvg . gen_0_collections) (>),
+            number "Parallel collections" (getAvg . gen_0_par_collections) (>),
+            seconds "Time" (getAvg . gen_0_wall_seconds) (>),
+            seconds "CPU time" (getAvg . gen_0_cpu_seconds) (>),
+            seconds "Average time" average_gen_0_time (>),
+            seconds "Max time" (coerce gen_0_max_pause_seconds) (>)
+          ],
+        RowGroup
+          "GC generation 1"
+          [ number "Collections" (getAvg . gen_1_collections) (>),
+            number "Parallel collections" (getAvg . gen_1_par_collections) (>),
+            seconds "Time" (getAvg . gen_1_wall_seconds) (>),
+            seconds "CPU time" (getAvg . gen_1_cpu_seconds) (>),
+            seconds "Average time" average_gen_1_time (>),
+            seconds "Max time" (coerce gen_1_max_pause_seconds) (>)
+          ],
+        RowGroup
+          "Sparks"
+          [ maybeNumber "Converted" (fmap getAvg . sparks_converted) (<),
+            maybeNumber "Overflowed" (fmap getAvg . sparks_overflowed) (>),
+            maybeNumber "Not sparked" (fmap getAvg . sparks_dud) (>),
+            maybeNumber "Fizzled" (fmap getAvg . sparks_fizzled) (>),
+            maybeNumber "Garbage collected" (fmap getAvg . sparks_fizzled) (>)
+          ]
       ]
     metric :: (Rational -> String) -> Cell -> (Summary -> Rational) -> (Rational -> Rational -> Bool) -> Row
     metric render name f = maybeMetric render name (Just . f)
@@ -296,6 +351,14 @@ summariesToTable ~(summary : summaries) =
 allocated_bytes_per_second :: Summary -> Rational
 allocated_bytes_per_second s =
   getAvg (allocated_bytes s) `divide` getAvg (total_wall_seconds s)
+
+average_gen_0_time :: Summary -> Rational
+average_gen_0_time s =
+  getAvg (gen_0_wall_seconds s) `divide` getAvg (gen_0_collections s)
+
+average_gen_1_time :: Summary -> Rational
+average_gen_1_time s =
+  getAvg (gen_1_wall_seconds s) `divide` getAvg (gen_1_collections s)
 
 average_live_data :: Summary -> Rational
 average_live_data s =
@@ -362,8 +425,8 @@ prettySeconds n0
 data Table
   = Table [String] [RowGroup]
 
-type RowGroup =
-  [Row]
+data RowGroup
+  = RowGroup String [Row]
 
 data Row
   = Row [Cell]
@@ -396,23 +459,26 @@ isEmptyCell (Cell _ s) =
 
 renderTable :: Table -> String
 renderTable (Table labels rowGroups) =
-  intercalate "\n" (header : intersperse line (mapMaybe renderRowGroup rowGroups) ++ [footer])
+  intercalate "\n" (header : mapMaybe renderRowGroup rowGroups ++ [footer])
   where
     header :: String
     header =
       let middle = intercalate "┬" (map (\(s, n) -> s ++ replicate (n + 2 - length s) '─') (zip labels widths))
-       in "┌" ++ middle ++ "┐"
-    line :: String
-    line =
-      "├" ++ intercalate "┼" (map (\n -> replicate (n + 2) '─') widths) ++ "┤"
+       in '┌' : middle ++ "┐"
+    line :: String -> String
+    line label =
+      let label' = "\ESC[1m\ESC[4m\ESC[97m" ++ label ++ "\ESC[39m\ESC[24m\ESC[22m"
+          segment = label' ++ replicate (head widths + 2 - length label) '─'
+          segments = concatMap (\n -> '┼' : replicate (n + 2) '─') (tail widths)
+       in '├' : segment ++ segments ++ "┤"
     footer :: String
     footer =
-      "└" ++ intercalate "┴" (map (\n -> replicate (n + 2) '─') widths) ++ "┘"
+      '└' : intercalate "┴" (map (\n -> replicate (n + 2) '─') widths) ++ "┘"
     renderRowGroup :: RowGroup -> Maybe String
-    renderRowGroup rows =
+    renderRowGroup (RowGroup label rows) =
       case mapMaybe renderRow rows of
         [] -> Nothing
-        s -> Just (intercalate "\n" s)
+        s -> Just (intercalate "\n" (line label : s))
     renderRow :: Row -> Maybe String
     renderRow = \case
       Row row -> Just ("│ " ++ intercalate " │ " (map renderCell (zip widths row)) ++ " │")
@@ -428,12 +494,19 @@ renderTable (Table labels rowGroups) =
     widths :: [Int]
     widths =
       foldl'
-        ( \acc -> \case
-            Row cs -> map (\(Cell _ s, n) -> max n (length s)) (zip cs acc)
-            Empty -> acc
+        ( \acc (RowGroup label rows) ->
+            foldl'
+              ( \acc2 -> \case
+                  Row [] -> error "empty row"
+                  Row (Cell _ s0 : cols) ->
+                    zipWith max (max (length label) (length s0) : map (\(Cell _ s) -> length s) cols) acc2
+                  Empty -> acc2
+              )
+              acc
+              rows
         )
         (map (subtract 1 . length) labels)
-        (concat rowGroups)
+        rowGroups
 
 --------------------------------------------------------------------------------
 -- Random monoids
