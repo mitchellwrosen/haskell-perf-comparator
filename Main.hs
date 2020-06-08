@@ -8,7 +8,7 @@
 
 module Main where
 
-import Control.Applicative (some)
+import Control.Applicative
 import Control.Exception
 import Control.Monad
 import Data.ByteString (ByteString)
@@ -38,18 +38,19 @@ main =
 
 parser :: Opt.Parser (IO ())
 parser =
-  run <$> runs <*> some prog
+  run <$> runs <*> some prog <*> many label
   where
     runs =
       Opt.option
         Opt.auto
-        (Opt.help "Number of runs" <> Opt.metavar "INT" <> Opt.short 'n' <> Opt.showDefault <> Opt.value 1)
-    prog = Opt.strArgument (Opt.metavar "PROGRAM")
+        (Opt.help "Number of runs" <> Opt.metavar "≪runs≫" <> Opt.short 'n' <> Opt.showDefault <> Opt.value 1)
+    prog = Opt.strArgument (Opt.metavar "≪program≫+")
+    label = Opt.strOption (Opt.help "Label for corresponding program" <> Opt.long "label" <> Opt.metavar "≪label≫" <> Opt.short 'l')
 
-run :: Int -> [String] -> IO ()
-run runs commands = do
+run :: Int -> [String] -> [String] -> IO ()
+run runs commands names = do
   summaries <- traverse (replicateM runs . run1 . words) commands
-  putStrLn (renderTable (summariesToTable (map fold summaries)))
+  putStrLn (renderTable (summariesToTable names (map fold summaries)))
 
 run1 :: [String] -> IO Summary
 run1 ~(command : arguments) =
@@ -239,14 +240,15 @@ toSummary = \case
     readRational =
       realToFrac . read @Double
 
-summariesToTable :: [Summary] -> Table
-summariesToTable ~(summary : summaries) =
+summariesToTable :: [String] -> [Summary] -> Table
+summariesToTable names ~(summary : summaries) =
   Table header rowGroup
   where
     header :: [String]
     header =
-      (if length summaries > 1 then (++ ["Total"]) else id)
-        ("" : "1" : concat (take (length summaries) (map (\i -> ["", show i]) [(2 :: Int) ..])))
+      (if length summaries > 1 then (++ ["Total"]) else id) do
+        name <- take (length summaries + 1) (halfZipWith const names (map show [(1 :: Int) ..]))
+        ["", name]
     rowGroup :: [RowGroup]
     rowGroup =
       [ RowGroup
@@ -347,6 +349,10 @@ summariesToTable ~(summary : summaries) =
         pct :: Rational
         pct =
           ((v2 - v1) * 100) `divide` v1
+    halfZipWith :: (a -> a -> a) -> [a] -> [a] -> [a]
+    halfZipWith _ [] ys = ys
+    halfZipWith _ xs [] = xs
+    halfZipWith f (x : xs) (y : ys) = f x y : halfZipWith f xs ys
 
 allocated_bytes_per_second :: Summary -> Rational
 allocated_bytes_per_second s =
