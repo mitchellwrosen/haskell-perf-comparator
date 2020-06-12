@@ -4,6 +4,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Main where
@@ -11,8 +12,8 @@ module Main where
 import Control.Applicative
 import Control.Exception
 import Control.Monad
-import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
+import Data.Char
 import qualified Data.ByteString.Char8 as ByteString.Char8
 import Data.Coerce (coerce)
 import Data.Foldable
@@ -21,6 +22,7 @@ import Data.Maybe
 import qualified Data.Semigroup as Semigroup
 import Data.Semigroup.Generic
 import Data.String (IsString (..))
+import Data.Typeable
 import GHC.Generics (Generic)
 import qualified Options.Applicative as Opt
 import System.Exit
@@ -28,6 +30,7 @@ import System.IO (IOMode (WriteMode), withFile)
 import qualified System.IO as IO
 import qualified System.Process as Process
 import Text.Printf (printf)
+import Text.Read (readMaybe)
 
 main :: IO ()
 main =
@@ -49,16 +52,16 @@ parser =
 
 run :: Int -> [String] -> [String] -> IO ()
 run runs commands names = do
-  summaries <- traverse (replicateM runs . run1 . words) commands
+  summaries <- traverse (replicateM runs . run1) commands
   putStrLn (renderTable (summariesToTable names (map fold summaries)))
 
-run1 :: [String] -> IO Summary
-run1 ~(command : arguments) =
-  readSummary
+run1 :: String -> IO Summary
+run1 command =
+  readSummary . ('[' :) . ByteString.Char8.unpack . snd . ByteString.spanEnd (/= fromIntegral (ord '['))
     <$> withFile "/dev/null" WriteMode \devNull ->
       bracket
         ( Process.createProcess
-            (Process.proc command (arguments ++ ["+RTS", "-t", "--machine-readable", "-RTS"]))
+            (Process.shell (command ++ " +RTS -t --machine-readable -RTS"))
               { Process.std_in = Process.NoStream,
                 Process.std_out = Process.UseHandle devNull,
                 Process.std_err = Process.CreatePipe
@@ -138,9 +141,9 @@ instance Monoid Summary where
   mempty = gmempty
   mappend = (<>)
 
-readSummary :: ByteString -> Summary
+readSummary :: String -> Summary
 readSummary =
-  foldMap @[] toSummary . read . ByteString.Char8.unpack
+  foldMap @[] toSummary . read'
 
 toSummary :: (String, String) -> Summary
 toSummary = \case
@@ -238,7 +241,7 @@ toSummary = \case
       coerce readRational
     readRational :: String -> Rational
     readRational =
-      realToFrac . read @Double
+      realToFrac . read' @Double
 
 summariesToTable :: [String] -> [Summary] -> Table
 summariesToTable names ~(summary : summaries) =
@@ -544,3 +547,13 @@ instance Monoid Max where
 instance Semigroup Max where
   Max x <> Max y =
     Max (max x y)
+
+--------------------------------------------------------------------------------
+-- Misc
+--------------------------------------------------------------------------------
+
+read' :: forall a. (Read a, Typeable a) => String -> a
+read' s =
+  case readMaybe s of
+    Nothing -> error ("Cannot parse " ++ show s ++ " as a(n) " ++ showsTypeRep (typeRep (Proxy @a)) "")
+    Just x -> x
