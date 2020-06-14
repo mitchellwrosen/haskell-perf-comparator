@@ -183,6 +183,10 @@ toSummary = \case
   ("max_slop_bytes", n) -> mempty {max_slop_bytes = readMax n}
   ("mut_cpu_seconds", n) -> mempty {mut_cpu_seconds = readAvg n}
   ("mut_wall_seconds", n) -> mempty {mut_wall_seconds = readAvg n}
+  -- ghc 8.4.4 compat
+  ("mutator_cpu_seconds", n) -> mempty {mut_cpu_seconds = readAvg n}
+  ("mutator_wall_seconds", n) -> mempty {mut_wall_seconds = readAvg n}
+  -- end ghc 8.4.4 compat
   ("n_capabilities", n) -> mempty {n_capabilities = Just (Semigroup.First (readRational n))}
   ("par_copied_bytes", n) -> mempty {par_copied_bytes = readAvg n}
   ("peak_worker_count", n) -> mempty {peak_worker_count = Just (readAvg n)}
