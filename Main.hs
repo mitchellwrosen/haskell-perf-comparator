@@ -13,8 +13,8 @@ import Control.Applicative
 import Control.Exception
 import Control.Monad
 import qualified Data.ByteString as ByteString
-import Data.Char
 import qualified Data.ByteString.Char8 as ByteString.Char8
+import Data.Char
 import Data.Coerce (coerce)
 import Data.Foldable
 import Data.List
@@ -260,18 +260,20 @@ summariesToTable names ~(summary : summaries) =
             seconds "Mutator" (getAvg . mut_wall_seconds) (>),
             percentage "Mutator %" mut_wall_percent (<),
             seconds "Garbage collector" (getAvg . gc_wall_seconds) (>),
-            percentage "Garbage collector %" gc_wall_percent (>)
+            percentage "Garbage collector %" gc_wall_percent (>),
+            seconds "RTS setup/teardown" rts_wall_seconds (>),
+            percentage "RTS setup/teardown %" rts_wall_percent (>)
           ],
-        -- seconds "Time (rts)" (\s -> getAvg (init_wall_seconds s) + getAvg (exit_wall_seconds s)) (>),
         RowGroup
           "CPU time"
           [ seconds "Total" (getAvg . total_cpu_seconds) (>),
             seconds "Mutator" (getAvg . mut_cpu_seconds) (>),
             percentage "Mutator %" mut_cpu_percent (<),
             seconds "Garbage collector" (getAvg . gc_cpu_seconds) (>),
-            percentage "Garbage collector %" gc_cpu_percent (>)
+            percentage "Garbage collector %" gc_cpu_percent (>),
+            seconds "RTS setup/teardown" rts_cpu_seconds (>),
+            percentage "RTS setup/teardown %" rts_cpu_percent (>)
           ],
-        -- seconds "Time (rts cpu)" (\s -> getAvg (init_cpu_seconds s) + getAvg (exit_cpu_seconds s)) (>),
         RowGroup
           "Memory"
           [ bytes "Average residency" average_live_data (>),
@@ -279,13 +281,18 @@ summariesToTable names ~(summary : summaries) =
             bytes "Allocated" (getAvg . allocated_bytes) (>),
             bytesPerSecond "Allocated per second" allocated_bytes_per_second (>),
             bytes "Copied during GC" (getAvg . copied_bytes) (>),
+            bytes "Copied during parallel GC" (getAvg . par_copied_bytes) (>),
             bytes "Allocated from OS" (coerce max_mem_in_use_bytes) (>),
             bytes "Wasted by GHC" (coerce max_slop_bytes) (>),
             bytes "Fragmented" (getAvg . fragmentation_bytes) (>)
           ],
         RowGroup
+          "Parallel GC"
+          [ maybePercentage "Work balance" work_balance (<)
+          ],
+        RowGroup
           "GC generation 0"
-          [ number "Collections" (getAvg . gen_0_collections) (>),
+          [ number "Total collections" (getAvg . gen_0_collections) (>),
             number "Parallel collections" (getAvg . gen_0_par_collections) (>),
             seconds "Time" (getAvg . gen_0_wall_seconds) (>),
             seconds "CPU time" (getAvg . gen_0_cpu_seconds) (>),
@@ -294,7 +301,7 @@ summariesToTable names ~(summary : summaries) =
           ],
         RowGroup
           "GC generation 1"
-          [ number "Collections" (getAvg . gen_1_collections) (>),
+          [ number "Total collections" (getAvg . gen_1_collections) (>),
             number "Parallel collections" (getAvg . gen_1_par_collections) (>),
             seconds "Time" (getAvg . gen_1_wall_seconds) (>),
             seconds "CPU time" (getAvg . gen_1_cpu_seconds) (>),
@@ -332,14 +339,18 @@ summariesToTable names ~(summary : summaries) =
                   _ -> []
           s1 : ss ->
             case (f s0, f s1) of
-              (Just v0, Just v1) -> delta (g v0 v1) v0 v1 : white (render v1) : makeCols s1 ss
+              (mv0, Just v1) ->
+                (case mv0 of Nothing -> ""; Just v0 -> delta (g v0 v1) v0 v1)
+                  : white (render v1)
+                  : makeCols s1 ss
               _ -> "" : "" : makeCols s1 ss
-    bytes = metric prettyBytes
-    bytesPerSecond = metric prettyBytesPerSecond
-    number = metric (show . round @_ @Int)
-    maybeNumber = maybeMetric (show . round @_ @Int)
+    bytes c f = maybeMetric prettyBytes c (\s -> case f s of 0 -> Nothing; n -> Just n)
+    bytesPerSecond c f = maybeMetric prettyBytesPerSecond c (\s -> case f s of 0 -> Nothing; n -> Just n)
+    number c f = maybeMetric (show . round @_ @Int) c (\s -> case f s of 0 -> Nothing; n -> Just n)
+    maybeNumber c f = maybeMetric (show . round @_ @Int) c (\s -> f s >>= \case 0 -> Nothing; n -> Just n)
     percentage = metric prettyPercentage
-    seconds = metric prettySeconds
+    maybePercentage = maybeMetric prettyPercentage
+    seconds c f = maybeMetric prettySeconds c (\s -> case f s of 0 -> Nothing; n -> Just n)
     delta :: Bool -> Rational -> Rational -> Cell
     delta b v1 v2 =
       if abs pct <= cutoff
@@ -389,9 +400,33 @@ mut_wall_percent :: Summary -> Rational
 mut_wall_percent s =
   getAvg (mut_wall_seconds s) `divide` getAvg (total_wall_seconds s)
 
+rts_cpu_percent :: Summary -> Rational
+rts_cpu_percent s =
+  (getAvg (init_cpu_seconds s) + getAvg (exit_cpu_seconds s)) `divide` getAvg (total_cpu_seconds s)
+
+rts_cpu_seconds :: Summary -> Rational
+rts_cpu_seconds s =
+  getAvg (init_cpu_seconds s) + getAvg (exit_cpu_seconds s)
+
+rts_wall_percent :: Summary -> Rational
+rts_wall_percent s =
+  (getAvg (init_wall_seconds s) + getAvg (exit_wall_seconds s)) `divide` getAvg (total_wall_seconds s)
+
+rts_wall_seconds :: Summary -> Rational
+rts_wall_seconds s =
+  getAvg (init_wall_seconds s) + getAvg (exit_wall_seconds s)
+
+work_balance :: Summary -> Maybe Rational
+work_balance s =
+  getAvg (cumulative_par_balanced_copied_bytes s) `divide'` getAvg (par_copied_bytes s)
+
 divide :: Rational -> Rational -> Rational
 divide n d =
   if d == 0 then 0 else n / d
+
+divide' :: Rational -> Rational -> Maybe Rational
+divide' n d =
+  if d == 0 then Nothing else Just (n / d)
 
 --------------------------------------------------------------------------------
 -- Pretty-printing
